@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import signal
+import subprocess
 from gi.repository import Notify
 
 from apiclient import discovery
@@ -19,6 +20,8 @@ BaseDir = os.environ['HOME']+"/gmailchk"
 BinDir = os.environ['HOME']+"/bin"
 CONFFILE = BaseDir+"/config.ini"
 DAEMONPIDFILE = BaseDir+"/pid"
+CHKINTERVAL = ""
+APP = "GmailCheck"
 
 '''try:
     import argparse
@@ -70,10 +73,13 @@ def CreateMsgLabels():
     return {'removeLabelIds': ['UNREAD'], 'addLabelIds': []}
 
 
-def notif_msg(app, msg, iconpath):
-    # os.system("notify-send -i "+icon+" Todo \""+msg+"\"")
-    n = Notify.Notification.new(app, msg, iconpath)
+def notif_msg(msg):
+    global APP
+    n = Notify.Notification.new(APP, msg, "geary")
     n.show()
+
+
+##########################################################################
 
 
 def main():
@@ -86,10 +92,14 @@ def main():
 
     parentpid = sys.argv[1]
 
+# Read config
+    try:
+        CHKINTERVAL = subprocess.check_output("grep checkinterval "+CONFFILE+" | cut -d= -f 2", shell=True)
+    except:
+        CHKINTERVAL = "300"
 
-
-    # Register app in the notification library
-    Notify.init("GmailCheck")
+# Register app in the notification library
+    Notify.init(APP)
 
     # Store pid
     PID = os.getpid()
@@ -97,11 +107,6 @@ def main():
     f.write(str(PID))
     f.close()
 
-    """Shows basic usage of the Gmail API.
-
-    Creates a Gmail API service object and outputs a list of label names
-    of the user's Gmail account.
-    """
     credentials = get_credentials()
     http = credentials.authorize(httplib2.Http())
     service = discovery.build('gmail', 'v1', http=http)
@@ -110,6 +115,7 @@ def main():
     checkinterval = 60
     lastmsglist = ""
     whilecont = 1
+    nothingcount = 0
     while (True):
         try:
             # get 5 latest unread messages
@@ -121,6 +127,7 @@ def main():
 
             if not messlist:
                 print('No messages found.')
+                nothingcount = nothingcount + 1
             else:
                 # print('Messages:')
                 currmsglist = ""
@@ -137,16 +144,21 @@ def main():
                     # msg_str = base64.urlsafe_b64decode(message['raw'].encode('ASCII'))
                 if currmsglist != lastmsglist and whilecont > 1:
                     # new mail
-                    notif_msg("GmailCheck", "New mail!", "")
-                    os.kill(int(parentpid), signal.SIGUSR1)  # send signal to parent
+                    notif_msg("New mail!")
+                    os.kill(int(parentpid), signal.SIGUSR1)  # send signal to parent to put unread icon
+                    nothingcount = 0
+                else:
+                    nothingcount = nothingcount + 1
+                    if nothingcount % 5 == 0:
+                        os.kill(int(parentpid), signal.SIGUSR2)  # send signal to reset icon
                 if whilecont == 1:
-                    notif_msg("GmailCheck", "Latest: " + echomesg, "")
+                    notif_msg("Latest: " + echomesg)
 
                 lastmsglist = currmsglist
         except errors.HttpError, error:
             print ('An error occurred: %s' % error)
         whilecont = whilecont + 1
-        time.sleep(checkinterval)
+        time.sleep(CHKINTERVAL)
 
 
 if __name__ == '__main__':
