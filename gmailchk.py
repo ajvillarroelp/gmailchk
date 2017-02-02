@@ -1,14 +1,30 @@
 #!/usr/bin/python
+import httplib2
+
 import os
 import signal
 import sys
 import subprocess
+import glob
 
-from gi.repository import Gtk, Gio,GLib, GObject
+from apiclient import discovery
+from apiclient import errors
+from oauth2client import client
+from oauth2client import tools
+from oauth2client.file import Storage
+
+import gi
+
+from gi.repository import Gtk
+from gi.repository import GLib
 from gi.repository import AppIndicator3 as appindicator
 from gi.repository import Notify
 
-BaseDir = os.environ['HOME']+"/gmailchk"
+gi.require_version('AppIndicator3', '0.1')
+gi.require_version('Gtk', '3.0')
+gi.require_version('Notify', '0.7')
+
+BaseDir = os.environ['HOME']+"/gmailchk_accountsupport"
 BinDir = os.environ['HOME']+"/bin"
 CONFFILE = BaseDir+"/config.ini"
 READICON = BaseDir+"/geary.svg"
@@ -16,6 +32,48 @@ UNREADICON = BaseDir+"/unread.geary.png"
 DAEMONPIDFILE = BaseDir+"/pid"
 CHKINTERVAL = ""
 APP = "GmailCheck"
+DEBUG = 1
+
+###########################################################
+# If modifying these scopes, delete your previously saved credentials
+# at ~/.credentials/gmail-python-quickstart.json
+SCOPES = 'https://www.googleapis.com/auth/gmail.modify'
+#  AV client file in app base directory
+CLIENT_SECRET_FILE = 'client_secret_gmailchkclient.json'
+APPLICATION_NAME = 'GmailCheck'
+
+
+def get_credentials(acc_dir):
+    """Gets valid user credentials from storage.
+
+    If nothing has been stored, or if the stored credentials are invalid,
+    the OAuth2 flow is completed to obtain the new credentials.
+
+    Returns:
+        Credentials, the obtained credential.
+    """
+    home_dir = os.path.expanduser('~')
+    # Directory to store credentials
+    # credential_dir = os.path.join(home_dir, '.credentials_gmailchk')
+    credential_dir = os.path.join(home_dir, acc_dir)
+    if not os.path.exists(credential_dir):
+        os.makedirs(credential_dir)
+    credential_path = os.path.join(credential_dir,
+                                   'gmail-python-gmailchk.json')
+
+    store = Storage(credential_path)
+    credentials = store.get()
+    if not credentials or credentials.invalid:
+        flow = client.flow_from_clientsecrets(CLIENT_SECRET_FILE, SCOPES)
+        flow.user_agent = APPLICATION_NAME
+        if flags:
+            credentials = tools.run_flow(flow, store, flags)
+        else:  # Needed only for compatibility with Python 2.6
+            credentials = tools.run(flow, store)
+        print('Storing credentials to ' + credential_path)
+    return credentials
+
+###########################################################
 
 
 def notif_msg(msg, iconpath):
@@ -26,17 +84,11 @@ def notif_msg(msg, iconpath):
 
 
 ###########################################################
-'''def cbk_turnoffmon(widget):
-    global BaseDir
-    os.system("bash "+BinDir+"/dualdisplayoff.sh")
-'''
-
-###########################################################
 
 
 def cbk_settings(widget):
     global CHKINTERVAL
-    print "Settings"
+    print ("Settings")
 
     dialog = Gtk.Dialog(title="Settings", buttons=(Gtk.STOCK_OK, Gtk.ResponseType.OK, Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL))
     vboxdiag = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
@@ -159,19 +211,48 @@ def chkdaemon():
 
 
 ##########################################################
-
-
-debug = 0
+# MAIN
 
 # set the timeout handler
 signal.signal(signal.SIGUSR1, sigreset)
 
+account_list = glob.glob(os.environ['HOME']+'/.credentials_gmailchk_acc*')
+
+addaccountflag = 0
+##########################################################
+# Check arguments
+total = len(sys.argv)
+
+if total > 1:
+    if sys.argv[1] == "--add_account":
+        addaccountflag = 1
+
+    # empty the argument list for the gmail api
+    del sys.argv[1:]
+
+##########################################################
 # Read config
 try:
     CHKINTERVAL = subprocess.check_output("grep checkinterval "+CONFFILE+" | cut -d= -f 2", shell=True)
 except:
     CHKINTERVAL = "300"
 
+try:
+    import argparse
+    flags = argparse.ArgumentParser(parents=[tools.argparser]).parse_args()
+except ImportError:
+    flags = None
+
+###########################################
+# first time create base account
+
+if len(account_list) == 0 or addaccountflag == 1:
+    nextacc = len(account_list) + 1
+    credentials = get_credentials(".credentials_gmailchk_acc"+str(nextacc))
+    http = credentials.authorize(httplib2.Http())
+    service = discovery.build('gmail', 'v1', http=http)
+    print "\nAccount created! To delete it remove the entire directory ~/.credentials_gmailchk_acc"+str(nextacc)
+    sys.exit(0)
 
 ###########################################
 # Register app in the notification library
@@ -207,12 +288,6 @@ ind.set_menu(menu)
 
 win.connect("delete-event", Gtk.main_quit)
 
-parentpid = os.getpid()
-
-# start daemon checker
-os.system("python "+BaseDir+"/gmailchk_daemon.py "+str(parentpid)+" &")
-# print "python "+BaseDir+"/gmailchk_daemon.py "+str(PID)+" &"
-
 # Install signal to change when unread messages
 GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGUSR1, sigsetunreadicon)
 
@@ -225,5 +300,11 @@ GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGTERM, sighand)
 
 # Periodically reset the icon to all read
 id = GLib.timeout_add_seconds(120, chkdaemon)
+
+parentpid = os.getpid()
+
+# start daemon checker
+os.system("python "+BaseDir+"/gmailchk_daemon.py "+str(parentpid)+" &")
+# print "python "+BaseDir+"/gmailchk_daemon.py "+str(PID)+" &"
 
 Gtk.main()

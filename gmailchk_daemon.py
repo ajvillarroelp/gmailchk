@@ -7,7 +7,9 @@ import os
 import sys
 import time
 import signal
+import glob
 import subprocess
+import gi
 from gi.repository import Notify
 
 from apiclient import discovery
@@ -16,7 +18,9 @@ from oauth2client import client
 from oauth2client import tools
 from oauth2client.file import Storage
 
-BaseDir = os.environ['HOME']+"/gmailchk"
+gi.require_version('Notify', '0.7')
+
+BaseDir = os.environ['HOME']+"/gmailchk_accountsupport"
 BinDir = os.environ['HOME']+"/bin"
 CONFFILE = BaseDir+"/config.ini"
 DAEMONPIDFILE = BaseDir+"/pid"
@@ -36,9 +40,11 @@ SCOPES = 'https://www.googleapis.com/auth/gmail.modify'
 #  AV client file in app base directory
 CLIENT_SECRET_FILE = 'client_secret_gmailchkclient.json'
 APPLICATION_NAME = 'GmailCheck'
+flags = None
 
 
-def get_credentials():
+# def get_credentials():
+def get_credentials(account_dir):
     """Gets valid user credentials from storage.
 
     If nothing has been stored, or if the stored credentials are invalid,
@@ -48,7 +54,9 @@ def get_credentials():
         Credentials, the obtained credential.
     """
     home_dir = os.path.expanduser('~')
-    credential_dir = os.path.join(home_dir, '.credentials_gmailchk')   # Directory to store credentials
+    # Directory to store credentials
+    # credential_dir = os.path.join(home_dir, '.credentials_gmailchk')
+    credential_dir = os.path.join(home_dir, account_dir)
     if not os.path.exists(credential_dir):
         os.makedirs(credential_dir)
     credential_path = os.path.join(credential_dir,
@@ -84,6 +92,7 @@ def notif_msg(msg):
 
 
 def main():
+    global flags
 
     total = len(sys.argv)
 
@@ -93,6 +102,28 @@ def main():
 
     parentpid = sys.argv[1]
 
+    # empty the argument list for the gmail api
+    del sys.argv[1:]
+
+    try:
+        import argparse
+        flags = argparse.ArgumentParser(parents=[tools.argparser]).parse_args()
+    except ImportError:
+        flags = None
+
+# Register app in the notification library
+    Notify.init(APP)
+
+###########################################
+# Check existing accouts
+
+    account_list = glob.glob(os.environ['HOME']+'/.credentials_gmailchk_acc*')
+
+    if len(account_list) == 0:
+        print ("No accounts defined. Aborting. Run python gmailchk.py")
+        notif_msg("No accounts defined. Aborting...")
+        sys.exit(2)
+
 # Read config
     try:
         CHKINTERVAL = subprocess.check_output("grep checkinterval "+CONFFILE+" | cut -d= -f 2", shell=True)
@@ -100,68 +131,74 @@ def main():
     except:
         CHKINTERVAL = "300"
 
-# Register app in the notification library
-    Notify.init(APP)
-
     # Store pid
     PID = os.getpid()
     f = open(DAEMONPIDFILE, "w")
     f.write(str(PID))
     f.close()
 
-    credentials = get_credentials()
-    http = credentials.authorize(httplib2.Http())
-    service = discovery.build('gmail', 'v1', http=http)
-
-    lastmsglist = ""
+    # lastmsglist = ""
+    # list to store the last emails ids for each account
+    lastmsglist = {}
     whilecont = 1
     nothingcount = 0
     while (True):
-        try:
-            # get 5 latest unread messages
-            if DEBUG == 1:
-                print ("Checking email...\n")
+        acc_count = 1
+        for account in account_list:
+            try:
+                account_item = os.path.basename(account)
+                credentials = get_credentials(account_item)
+                http = credentials.authorize(httplib2.Http())
+                service = discovery.build('gmail', 'v1', http=http)
 
-            results = service.users().messages().list(userId='me', maxResults=5, q='is:unread', prettyPrint='true').execute()
-            messlist = results.get('messages', [])
-
-            if not messlist:
+                # get 5 latest unread messages
                 if DEBUG == 1:
-                    print('No messages found.')
-                nothingcount = nothingcount + 1
-            else:
-                # print('Messages:')
-                currmsglist = ""
-                echomesg = ""
-                cont = 1
-                for messitem in messlist:
-                    # print(messitem['id'])
-                    if cont == 1:
-                        message = service.users().messages().get(userId='me', id=messitem['id']).execute()
-                        echomesg = message['snippet']
-                    currmsglist = currmsglist+messitem['id']+"-"
-                    cont = cont + 1
-                    # print ('Message snippet: %s -- labels ' % message['labelIds'])
-                    # msg_str = base64.urlsafe_b64decode(message['raw'].encode('ASCII'))
-                if currmsglist != lastmsglist and whilecont > 1:
-                    # new mail
-                    if DEBUG == 1:
-                        print ("New email!\n")
-                    notif_msg("New mail!")
-                    os.kill(int(parentpid), signal.SIGUSR1)  # send signal to parent to put unread icon
-                    nothingcount = 0
-                else:
-                    nothingcount = nothingcount + 1
-                    if nothingcount % 5 == 0:
-                        if DEBUG == 1:
-                            print ("Same and sending signal to reset icon")
-                        os.kill(int(parentpid), signal.SIGUSR2)  # send signal to reset icon
-                if whilecont == 1:
-                    notif_msg("Latest: " + echomesg)
+                    print ("Checking email for account ", acc_count, "...\n")
 
-                lastmsglist = currmsglist
-        except errors.HttpError, error:
-            print ('An error occurred: %s' % error)
+                results = service.users().messages().list(userId='me', maxResults=5, q='is:unread', prettyPrint='true').execute()
+                messlist = results.get('messages', [])
+
+                if not messlist:
+                    if DEBUG == 1:
+                        print('Account '+str(acc_count)+': No messages found.')
+                    nothingcount = nothingcount + 1
+                else:
+                    # print('Messages:')
+                    currmsglist = ""
+                    echomesg = ""
+                    cont = 1
+                    for messitem in messlist:
+                        # print(messitem['id'])
+                        if cont == 1:
+                            message = service.users().messages().get(userId='me', id=messitem['id']).execute()
+                            echomesg = message['snippet']
+                        currmsglist = currmsglist+messitem['id']+"-"
+                        cont = cont + 1
+                        # print ('Message snippet: %s -- labels ' % message['labelIds'])
+                        # msg_str = base64.urlsafe_b64decode(message['raw'].encode('ASCII'))
+                    if whilecont == 1:
+                        notif_msg("Latest: " + echomesg)
+
+                    elif currmsglist != lastmsglist[account_item] and whilecont > 1:
+                        # new mail
+                        if DEBUG == 1:
+                            print ("New email!\n")
+                        notif_msg("New mail!")
+                        os.kill(int(parentpid), signal.SIGUSR1)  # send signal to parent to put unread icon
+                        nothingcount = 0
+                    else:
+                        nothingcount = nothingcount + 1
+                        if nothingcount % 5 == 0:
+                            if DEBUG == 1:
+                                print ("Same emails ... sending signal to reset icon")
+                            os.kill(int(parentpid), signal.SIGUSR2)  # send signal to reset icon
+
+                    # lastmsglist = currmsglist
+                    lastmsglist[account_item] = currmsglist
+            except errors.HttpError, error:
+                print ('An error occurred: %s' % error)
+
+            acc_count = acc_count + 1
         whilecont = whilecont + 1
         time.sleep(int(CHKINTERVAL))
 
