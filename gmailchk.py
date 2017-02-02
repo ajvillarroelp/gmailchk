@@ -142,6 +142,22 @@ def sigreset():
     os.system("python "+BaseDir+"/setasread.py")
     return True
 
+
+def chkdaemon():
+    global BaseDir
+    isUp = ""
+
+    try:
+        isUp = subprocess.check_output("ps -ef | grep gmailchk_daemon | grep -v grep | wc -l", shell=True)
+        isUp = isUp.rstrip('\n')
+    except:
+        isUp = ""
+    if isUp == "":
+        notif_msg("Checking daemon is not running. Aborting...")
+        # Abortando
+        sighand()
+
+
 ##########################################################
 
 
@@ -208,6 +224,6 @@ GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGINT, sighand)
 GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGTERM, sighand)
 
 # Periodically reset the icon to all read
-# id = GLib.timeout_add_seconds(120, sigreset)
+id = GLib.timeout_add_seconds(120, chkdaemon)
 
 Gtk.main()

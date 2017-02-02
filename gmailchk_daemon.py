@@ -22,6 +22,7 @@ CONFFILE = BaseDir+"/config.ini"
 DAEMONPIDFILE = BaseDir+"/pid"
 CHKINTERVAL = ""
 APP = "GmailCheck"
+DEBUG = 1
 
 '''try:
     import argparse
@@ -95,6 +96,7 @@ def main():
 # Read config
     try:
         CHKINTERVAL = subprocess.check_output("grep checkinterval "+CONFFILE+" | cut -d= -f 2", shell=True)
+        CHKINTERVAL = CHKINTERVAL.rstrip('\n')
     except:
         CHKINTERVAL = "300"
 
@@ -111,8 +113,6 @@ def main():
     http = credentials.authorize(httplib2.Http())
     service = discovery.build('gmail', 'v1', http=http)
 
-    DEBUG = 1
-    checkinterval = 60
     lastmsglist = ""
     whilecont = 1
     nothingcount = 0
@@ -126,7 +126,8 @@ def main():
             messlist = results.get('messages', [])
 
             if not messlist:
-                print('No messages found.')
+                if DEBUG == 1:
+                    print('No messages found.')
                 nothingcount = nothingcount + 1
             else:
                 # print('Messages:')
@@ -144,12 +145,16 @@ def main():
                     # msg_str = base64.urlsafe_b64decode(message['raw'].encode('ASCII'))
                 if currmsglist != lastmsglist and whilecont > 1:
                     # new mail
+                    if DEBUG == 1:
+                        print ("New email!\n")
                     notif_msg("New mail!")
                     os.kill(int(parentpid), signal.SIGUSR1)  # send signal to parent to put unread icon
                     nothingcount = 0
                 else:
                     nothingcount = nothingcount + 1
                     if nothingcount % 5 == 0:
+                        if DEBUG == 1:
+                            print ("Same and sending signal to reset icon")
                         os.kill(int(parentpid), signal.SIGUSR2)  # send signal to reset icon
                 if whilecont == 1:
                     notif_msg("Latest: " + echomesg)
@@ -158,7 +163,7 @@ def main():
         except errors.HttpError, error:
             print ('An error occurred: %s' % error)
         whilecont = whilecont + 1
-        time.sleep(CHKINTERVAL)
+        time.sleep(int(CHKINTERVAL))
 
 
 if __name__ == '__main__':
