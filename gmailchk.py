@@ -138,7 +138,7 @@ def sigreset():
 
     print "Signal change to all read"
     ind.set_icon("geary")
-    #notif_msg("GmailCheck", "Resetting to Unread!", "")
+    # notif_msg("GmailCheck", "Resetting to Unread!", "")
     os.system("python "+BaseDir+"/setasread.py")
     return True
 
@@ -171,7 +171,7 @@ menu = Gtk.Menu()
 winmenu = Gtk.Menu()
 displaymenu = Gtk.Menu()
 
-#separator = Gtk.SeparatorMenuItem()
+# separator = Gtk.SeparatorMenuItem()
 
 setting_item = Gtk.MenuItem("Settings")
 setting_item.connect("activate", cbk_settings)
@@ -180,10 +180,10 @@ quit_item = Gtk.MenuItem("Quit")
 quit_item.connect("activate", cbk_quit)
 
 setting_item.show()
-#separator.show()
+# separator.show()
 quit_item.show()
 
-#menu.append(separator)
+# menu.append(separator)
 menu.append(setting_item)
 menu.append(quit_item)
 
@@ -208,6 +208,6 @@ GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGINT, sighand)
 GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGTERM, sighand)
 
 # Periodically reset the icon to all read
-#id = GLib.timeout_add_seconds(120, sigreset)
+# id = GLib.timeout_add_seconds(120, sigreset)
 
 Gtk.main()
