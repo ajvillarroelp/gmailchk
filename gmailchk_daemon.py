@@ -9,6 +9,7 @@ import time
 import signal
 import glob
 import subprocess
+import codecs
 import gi
 from gi.repository import Notify
 
@@ -20,11 +21,15 @@ from oauth2client.file import Storage
 
 gi.require_version('Notify', '0.7')
 
-BaseDir = os.environ['HOME']+"/gmailchk_accountsupport"
+BaseDir = os.environ['HOME']+"/.gmailchk"
 BinDir = os.environ['HOME']+"/bin"
 CONFFILE = BaseDir+"/config.ini"
 DAEMONPIDFILE = BaseDir+"/pid"
+DETAILSFILE = BaseDir+"/.details"
+STATUSFILE = BaseDir+"/.status"
 CHKINTERVAL = ""
+EMAILAPP = ""
+RESETINTERVAL = 11
 APP = "GmailCheck"
 DEBUG = 1
 
@@ -74,6 +79,8 @@ def get_credentials(account_dir):
         print('Storing credentials to ' + credential_path)
     return credentials
 
+##########################################################################
+
 
 def CreateMsgLabels():
     """  Create object to update labels.
@@ -82,11 +89,41 @@ def CreateMsgLabels():
     return {'removeLabelIds': ['UNREAD'], 'addLabelIds': []}
 
 
+##########################################################################
+
 def notif_msg(msg):
     global APP
-    n = Notify.Notification.new(APP, msg, "geary")
+    # os.system("notify-send -i geary "+APP+" \""+msg+"\"")
+    n = Notify.Notification.new("<b>"+APP+"</b>", msg, "geary")
     n.show()
 
+
+##########################################################################
+
+def writedets(account, msg):
+    global DETAILSFILE
+
+    name = account.split('@')
+    try:
+        f = codecs.open(DETAILSFILE+"_"+name[0], "w", "utf-8")
+        f.write("Account: "+account+"\n")
+        f.write(msg)
+        f.close()
+    except:
+        print ("Error writing "+DETAILSFILE+"_"+name[0]+" file!")
+
+
+##########################################################################
+
+def writestatusfile(msg):
+    global STATUSFILE
+
+    try:
+        f = open(STATUSFILE, "w")
+        f.write(msg)
+        f.close()
+    except:
+        print ("Error writing unread to status file!\n")
 
 ##########################################################################
 
@@ -131,11 +168,23 @@ def main():
     except:
         CHKINTERVAL = "300"
 
+    try:
+        EMAILAPP = subprocess.check_output("grep emailapp "+CONFFILE+" | cut -d= -f 2", shell=True)
+        EMAILAPP = EMAILAPP.rstrip('\n')
+    except:
+        EMAILAPP = ""
+
+
     # Store pid
     PID = os.getpid()
     f = open(DAEMONPIDFILE, "w")
     f.write(str(PID))
     f.close()
+
+    try:
+        os.remove(DETAILSFILE)
+    except:
+        print ("")
 
     # lastmsglist = ""
     # list to store the last emails ids for each account
@@ -144,6 +193,26 @@ def main():
     nothingcount = 0
     while (True):
         acc_count = 1
+        try:
+            emailappstatus = subprocess.check_output("ps -ef | grep "+EMAILAPP+" | grep -v grep", shell=True)
+            emailappstatus = emailappstatus.rstrip('\n')
+        except:
+            emailappstatus = ""
+
+        if emailappstatus != "":
+            status = ""
+            try:
+                f = open(STATUSFILE, "r")
+                status = f.read()
+                f.close()
+            except:
+                print ("Error reading status file!\n")
+            if status != "sleep":
+                writestatusfile("sleep")
+
+            whilecont = whilecont + 1
+            time.sleep(int(CHKINTERVAL))
+
         for account in account_list:
             try:
                 account_item = os.path.basename(account)
@@ -151,47 +220,58 @@ def main():
                 http = credentials.authorize(httplib2.Http())
                 service = discovery.build('gmail', 'v1', http=http)
 
+                userdata = service.users().getProfile(userId='me').execute()
+                accountname = userdata["emailAddress"]
+                results = service.users().messages().list(userId='me', maxResults=1, q='is:unread', prettyPrint='true').execute()
+                messlist = results.get('messages', [])
+
                 # get 5 latest unread messages
                 if DEBUG == 1:
-                    print ("Checking email for account ", acc_count, "...\n")
-
-                results = service.users().messages().list(userId='me', maxResults=5, q='is:unread', prettyPrint='true').execute()
-                messlist = results.get('messages', [])
+                    # print (userdata)
+                    print ("Checking email for account "+accountname+"...\n")
 
                 if not messlist:
                     if DEBUG == 1:
-                        print('Account '+str(acc_count)+': No messages found.')
+                        print('Account '+accountname+': No messages found.')
                     nothingcount = nothingcount + 1
                 else:
                     # print('Messages:')
                     currmsglist = ""
-                    echomesg = ""
+                    firstmesg = ""
                     cont = 1
                     for messitem in messlist:
                         # print(messitem['id'])
                         if cont == 1:
                             message = service.users().messages().get(userId='me', id=messitem['id']).execute()
-                            echomesg = message['snippet']
+                            firstmesg = message['snippet']+"\nLink: https://mail.google.com/mail/u/0/#inbox/"+messitem['id']
                         currmsglist = currmsglist+messitem['id']+"-"
                         cont = cont + 1
                         # print ('Message snippet: %s -- labels ' % message['labelIds'])
                         # msg_str = base64.urlsafe_b64decode(message['raw'].encode('ASCII'))
                     if whilecont == 1:
-                        notif_msg("Latest: " + echomesg)
+                        notif_msg("Latest unread for " + accountname + ": " + firstmesg.encode('ASCII', "ignore"))
+
+                        writedets(accountname, firstmesg)
+
+                        writestatusfile("allread")
 
                     elif currmsglist != lastmsglist[account_item] and whilecont > 1:
                         # new mail
                         if DEBUG == 1:
-                            print ("New email!\n")
-                        notif_msg("New mail!")
-                        os.kill(int(parentpid), signal.SIGUSR1)  # send signal to parent to put unread icon
+                            print ("New email for "+accountname+"!\n")
+                        notif_msg("New mail for " + accountname)
+                        writedets(accountname, firstmesg)
+                        # os.kill(int(parentpid), signal.SIGUSR1)  # send signal to parent to put unread icon
+                        writestatusfile("unread")
                         nothingcount = 0
                     else:
                         nothingcount = nothingcount + 1
-                        if nothingcount % 5 == 0:
+                        if nothingcount % RESETINTERVAL == 0:
                             if DEBUG == 1:
                                 print ("Same emails ... sending signal to reset icon")
-                            os.kill(int(parentpid), signal.SIGUSR2)  # send signal to reset icon
+
+                            # os.kill(int(parentpid), signal.SIGUSR2)  # send signal to reset icon
+                            writestatusfile("allread")
 
                     # lastmsglist = currmsglist
                     lastmsglist[account_item] = currmsglist

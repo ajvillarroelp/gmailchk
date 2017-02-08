@@ -6,6 +6,7 @@ import signal
 import sys
 import subprocess
 import glob
+import codecs
 
 from apiclient import discovery
 from apiclient import errors
@@ -16,6 +17,7 @@ from oauth2client.file import Storage
 import gi
 
 from gi.repository import Gtk
+from gi.repository import GObject
 from gi.repository import GLib
 from gi.repository import AppIndicator3 as appindicator
 from gi.repository import Notify
@@ -24,15 +26,22 @@ gi.require_version('AppIndicator3', '0.1')
 gi.require_version('Gtk', '3.0')
 gi.require_version('Notify', '0.7')
 
-BaseDir = os.environ['HOME']+"/gmailchk_accountsupport"
+BaseDir = os.environ['HOME']+"/.gmailchk"
 BinDir = os.environ['HOME']+"/bin"
 CONFFILE = BaseDir+"/config.ini"
 READICON = BaseDir+"/geary.svg"
+EMAILAPP = ""
 UNREADICON = BaseDir+"/unread.geary.png"
 DAEMONPIDFILE = BaseDir+"/pid"
+DETAILSFILE = BaseDir+"/.details"
+STATUSFILE = BaseDir+"/.status"
+CHFLAG = False
 CHKINTERVAL = ""
 APP = "GmailCheck"
+MARGIN = 5
 DEBUG = 1
+
+# GObject.threads_init()
 
 ###########################################################
 # If modifying these scopes, delete your previously saved credentials
@@ -79,10 +88,70 @@ def get_credentials(acc_dir):
 def notif_msg(msg, iconpath):
     global APP
     global READICON
-    n = Notify.Notification.new(APP, msg, READICON)
+    n = Notify.Notification.new("<b>"+APP+"</b>", msg, READICON)
     n.show()
 
 
+###########################################################
+
+
+def cbk_details(widget):
+    global ind
+
+    print ("Details")
+    # dialog = Gtk.Dialog(title="Details", buttons=(Gtk.STOCK_OK, Gtk.ResponseType.OK, Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL))
+    dialog = Gtk.Dialog(title="Details", buttons=(Gtk.STOCK_OK, Gtk.ResponseType.OK))
+    vboxdiag = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+
+    scroll = Gtk.ScrolledWindow()
+    scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+    scroll.set_size_request(600, 200)
+
+    detailview = Gtk.TextView()
+
+    detailview.set_border_window_size(Gtk.TextWindowType.LEFT, MARGIN)
+    detailview.set_border_window_size(Gtk.TextWindowType.RIGHT, MARGIN)
+    detailview.set_border_window_size(Gtk.TextWindowType.TOP, MARGIN)
+    detailview.set_border_window_size(Gtk.TextWindowType.BOTTOM, MARGIN)
+
+    detailview.set_wrap_mode(True)
+    scroll.add(detailview)
+    vboxdiag.pack_start(scroll, True, True, 0)
+
+    detailsfile_list = glob.glob(BaseDir + '/.details*')
+    if len(account_list) == 0:
+        return False
+    content = ""
+    for fname in detailsfile_list:
+
+        try:
+            f = codecs.open(fname, "r", "utf-8")
+            fcontent = f.read()
+            f.close()
+        except:
+            print ""
+        content = content + "\n" + fcontent + "\n"
+
+    textbuffer = detailview.get_buffer()
+    textbuffer.set_text(content)
+
+    box = dialog.get_content_area()
+    box.add(vboxdiag)
+    vboxdiag.show_all()
+
+    response = dialog.run()
+
+    # Reset red icon to normal
+    try:
+        currstatus = subprocess.check_output("cat "+STATUSFILE, shell=True)
+        currstatus = currstatus.rstrip('\n')
+    except:
+        currstatus = "allread"
+
+    if currstatus != "allread":
+        sigreset()
+
+    dialog.destroy()
 ###########################################################
 
 
@@ -159,6 +228,8 @@ def cbk_quit(widget):
     # sys.exit(0)
     Gtk.main_quit()
 
+###########################################################
+
 
 def sighand():
     try:
@@ -174,31 +245,68 @@ def sighand():
     Gtk.main_quit()
     sys.exit(0)
 
+###########################################################
+
 
 def sigsetunreadicon():
     global win
     global BaseDir
     global ind
+    global detmenu_item
+    global details_item
     print "Signal received change icon to unread .."
     ind.set_icon("unread.geary")
 
+    # Set tooltip to mail snippet
+    detailsfile_list = glob.glob(BaseDir + '/.details*')
+    content = ""
+    for fname in detailsfile_list:
+        try:
+            f = codecs.open(fname, "r", "utf-8")
+            fcontent = f.read()
+            f.close()
+        except:
+            print ""
+        content = content + "\n" + fcontent + "\n"
+    detmenu_item.set_label(content)
+    details_item.set_tooltip_text(content)
+    # details_item.set_sensitive(True)
+
+
+###########################################################
 
 def sigreset():
     global win
     global BaseDir
     global ind
+    global details_item
 
     print "Signal change to all read"
+
     ind.set_icon("geary")
     # notif_msg("GmailCheck", "Resetting to Unread!", "")
     os.system("python "+BaseDir+"/setasread.py")
+    try:
+        f = open(STATUSFILE, "w")
+        f.write("allread")
+        f.close()
+    except:
+        print ("Error writing allread to status file!\n")
     return True
 
 
+###########################################################
+
 def chkdaemon():
     global BaseDir
-    isUp = ""
+    global STATUSFILE
+    global CHFLAG
+    global ind
 
+    # while True:
+    if DEBUG == 1:
+        print ("chkdaemon: going to check...")
+    isUp = ""
     try:
         isUp = subprocess.check_output("ps -ef | grep gmailchk_daemon | grep -v grep | wc -l", shell=True)
         isUp = isUp.rstrip('\n')
@@ -208,13 +316,39 @@ def chkdaemon():
         notif_msg("Checking daemon is not running. Aborting...")
         # Abortando
         sighand()
+# ---------------------------------------
+    status = ""
+    try:
+        f = open(STATUSFILE, "r")
+        status = f.read()
+        f.close()
+    except:
+        print ("Error reading status file!\n")
+        status = "allread"
+    if DEBUG == 1:
+        print ("chkdaemon: vars: ", status, CHFLAG)
+    if status == "unread" and not CHFLAG:
+        CHFLAG = True
+        sigsetunreadicon()
+    elif status == "allread" and CHFLAG:
+        CHFLAG = False
+        sigreset()
 
+    iconname = ind.get_icon()
+    if status == "sleep":
+        if iconname == "geary":
+            ind.set_icon("gearysleep")
+    else:
+        if iconname == "gearysleep":
+            ind.set_icon("geary")
 
+    return True
 ##########################################################
 # MAIN
 
 # set the timeout handler
-signal.signal(signal.SIGUSR1, sigreset)
+# signal.signal(signal.SIGUSR1, sigreset)
+
 
 account_list = glob.glob(os.environ['HOME']+'/.credentials_gmailchk_acc*')
 
@@ -226,6 +360,18 @@ total = len(sys.argv)
 if total > 1:
     if sys.argv[1] == "--add_account":
         addaccountflag = 1
+    elif sys.argv[1] == "--setup":
+        print "\nInstalling required files to ~/.gmailchk..."
+        if not os.path.exists(BaseDir):
+            os.makedirs(BaseDir)
+        os.system("cp geary.svg "+BaseDir)
+        os.system("cp geary.svg ~/.icons")
+        os.system("cp unread.geary.png "+BaseDir)
+        os.system("cp config.ini "+BaseDir)
+        os.system("bash setlinks.sh")
+        os.system("cp client_secret_gmailchkclient.json "+BaseDir)
+        print "Finished.\nNow run python gmailchk.py --add_account\n"
+        sys.exit(0)
 
     # empty the argument list for the gmail api
     del sys.argv[1:]
@@ -234,8 +380,15 @@ if total > 1:
 # Read config
 try:
     CHKINTERVAL = subprocess.check_output("grep checkinterval "+CONFFILE+" | cut -d= -f 2", shell=True)
+    CHKINTERVAL = CHKINTERVAL.rstrip('\n')
 except:
     CHKINTERVAL = "300"
+
+try:
+    EMAILAPP = subprocess.check_output("grep emailapp "+CONFFILE+" | cut -d= -f 2", shell=True)
+    EMAILAPP = EMAILAPP.rstrip('\n')
+except:
+    EMAILAPP = ""
 
 try:
     import argparse
@@ -265,10 +418,11 @@ ind.set_icon_theme_path(BaseDir)
 ind.set_status(appindicator.IndicatorStatus.ACTIVE)
 
 menu = Gtk.Menu()
-winmenu = Gtk.Menu()
-displaymenu = Gtk.Menu()
 
-# separator = Gtk.SeparatorMenuItem()
+details_item = Gtk.MenuItem("Latest Messages")
+details_item.connect("activate", cbk_details)
+
+separator = Gtk.SeparatorMenuItem()
 
 setting_item = Gtk.MenuItem("Settings")
 setting_item.connect("activate", cbk_settings)
@@ -276,12 +430,15 @@ setting_item.connect("activate", cbk_settings)
 quit_item = Gtk.MenuItem("Quit")
 quit_item.connect("activate", cbk_quit)
 
+details_item.show()
+
 setting_item.show()
-# separator.show()
+separator.show()
 quit_item.show()
 
-# menu.append(separator)
+menu.append(details_item)
 menu.append(setting_item)
+menu.append(separator)
 menu.append(quit_item)
 
 ind.set_menu(menu)
@@ -289,17 +446,17 @@ ind.set_menu(menu)
 win.connect("delete-event", Gtk.main_quit)
 
 # Install signal to change when unread messages
-GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGUSR1, sigsetunreadicon)
+# GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGUSR1, sigsetunreadicon)
 
 # Install signal to reset icon
-GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGUSR2, sigreset)
+# GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGUSR2, sigreset)
 
 # Install signal to kill daemon at exit
 GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGINT, sighand)
 GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGTERM, sighand)
 
 # Periodically reset the icon to all read
-id = GLib.timeout_add_seconds(120, chkdaemon)
+id = GLib.timeout_add_seconds(10, chkdaemon)
 
 parentpid = os.getpid()
 
