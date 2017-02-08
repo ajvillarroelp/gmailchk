@@ -157,6 +157,7 @@ def cbk_details(widget):
 
 def cbk_settings(widget):
     global CHKINTERVAL
+    global EMAILAPP
     print ("Settings")
 
     dialog = Gtk.Dialog(title="Settings", buttons=(Gtk.STOCK_OK, Gtk.ResponseType.OK, Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL))
@@ -179,6 +180,20 @@ def cbk_settings(widget):
     hbox1.pack_start(entry1, True, True, 0)
 
     listbox.add(row)
+
+    row = Gtk.ListBoxRow()
+    hbox2 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=50)
+    row.add(hbox2)
+
+    label2 = Gtk.Label("EmailApp:", xalign=0)
+    hbox2.pack_start(label2, True, True, 0)
+
+    entry2 = Gtk.Entry()
+    entry2.set_text(EMAILAPP)
+    hbox2.pack_start(entry2, True, True, 0)
+
+    listbox.add(row)
+
     box = dialog.get_content_area()
     box.add(vboxdiag)
     vboxdiag.show_all()
@@ -187,16 +202,18 @@ def cbk_settings(widget):
 
     if response == Gtk.ResponseType.OK:
         _chkintv = entry1.get_text()
+        _emailapp = entry2.get_text()
         # _coords=entry2.get_text()
-        # _height=entry3.get_text()
         # _extscript=entry4.get_text()
-        if _chkintv != "":
+        if _chkintv != "" and _emailapp != "":
             CHKINTERVAL = _chkintv
+            EMAILAPP = _emailapp
             # coords=_coords
             # height=_height
             # extscript=_extscript
             f = open(CONFFILE, "w")
             f.write("checkinterval="+CHKINTERVAL+"\n")
+            f.write("emailapp="+EMAILAPP+"\n")
             f.close()
         else:
             messagedialog = Gtk.MessageDialog(message_format="Error: One parameter is empty!\nTry again.")
