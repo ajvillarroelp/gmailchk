@@ -7,41 +7,41 @@ import sys
 import subprocess
 import glob
 import codecs
+import threading
+import time
+import gi
 
 from apiclient import discovery
 from apiclient import errors
 from oauth2client import client
 from oauth2client import tools
 from oauth2client.file import Storage
-
-import gi
-
-from gi.repository import Gtk
-from gi.repository import GObject
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk, GObject
 from gi.repository import GLib
+gi.require_version('AppIndicator3', '0.1')
 from gi.repository import AppIndicator3 as appindicator
+gi.require_version('Notify', '0.7')
 from gi.repository import Notify
 
-gi.require_version('AppIndicator3', '0.1')
-gi.require_version('Gtk', '3.0')
-gi.require_version('Notify', '0.7')
-
-BaseDir = os.environ['HOME']+"/.gmailchk"
-BinDir = os.environ['HOME']+"/bin"
-CONFFILE = BaseDir+"/config.ini"
-READICON = BaseDir+"/geary.svg"
+VERSION = "1.3"
+BaseDir = os.environ['HOME'] + "/.gmailchk"
+BinDir = os.environ['HOME'] + "/bin"
+CONFFILE = BaseDir + "/config.ini"
+READICON = BaseDir + "/geary.svg"
 EMAILAPP = ""
-UNREADICON = BaseDir+"/unread.geary.png"
-DAEMONPIDFILE = BaseDir+"/pid"
-DETAILSFILE = BaseDir+"/.details"
-STATUSFILE = BaseDir+"/.status"
+UNREADICON = BaseDir + "/unread.geary.png"
+DAEMONPIDFILE = BaseDir + "/pid"
+DETAILSFILE = BaseDir + "/.details"
+STATUSFILE = BaseDir + "/.status"
 CHFLAG = False
 CHKINTERVAL = ""
+RESETINTERVAL = 10
 APP = "GmailCheck"
 MARGIN = 5
 DEBUG = 1
 
-# GObject.threads_init()
+GObject.threads_init()
 
 ###########################################################
 # If modifying these scopes, delete your previously saved credentials
@@ -85,12 +85,24 @@ def get_credentials(acc_dir):
 ###########################################################
 
 
-def notif_msg(msg, iconpath):
+def notif_msg(msg):
     global APP
-    global READICON
-    n = Notify.Notification.new("<b>"+APP+"</b>", msg, READICON)
-    n.show()
+    try:
+        icon = BaseDir + "/geary.png"
+        os.system("notify-send -i " + icon + " " + APP + " \"" + msg + "\"")
+        # n = Notify.Notification.new("<b>" + APP + "</b>", msg, "geary")
+        # n.show()
+    except:
+        print "error in notif_msg..."
 
+###########################################################
+
+
+def cbk_reset(widget):
+
+    global ind
+    print "Signal change to all read"
+    ind.set_icon("geary")
 
 ###########################################################
 
@@ -119,7 +131,7 @@ def cbk_details(widget):
     vboxdiag.pack_start(scroll, True, True, 0)
 
     detailsfile_list = glob.glob(BaseDir + '/.details*')
-    if len(account_list) == 0:
+    if len(detailsfile_list) == 0:
         return False
     content = ""
     for fname in detailsfile_list:
@@ -142,14 +154,7 @@ def cbk_details(widget):
     response = dialog.run()
 
     # Reset red icon to normal
-    try:
-        currstatus = subprocess.check_output("cat "+STATUSFILE, shell=True)
-        currstatus = currstatus.rstrip('\n')
-    except:
-        currstatus = "allread"
-
-    if currstatus != "allread":
-        sigreset()
+    sigreset()
 
     dialog.destroy()
 ###########################################################
@@ -212,8 +217,8 @@ def cbk_settings(widget):
             # height=_height
             # extscript=_extscript
             f = open(CONFFILE, "w")
-            f.write("checkinterval="+CHKINTERVAL+"\n")
-            f.write("emailapp="+EMAILAPP+"\n")
+            f.write("checkinterval=" + CHKINTERVAL + "\n")
+            f.write("emailapp=" + EMAILAPP + "\n")
             f.close()
         else:
             messagedialog = Gtk.MessageDialog(message_format="Error: One parameter is empty!\nTry again.")
@@ -228,20 +233,18 @@ def cbk_settings(widget):
 ##########################################################
 
 
+def cbk_about(widget):
+    global VERSION
+    aboutdialog = Gtk.AboutDialog()
+    aboutdialog.set_name(APP)
+    aboutdialog.set_version(VERSION)
+    aboutdialog.set_comments("Simple gmail checker")
+    aboutdialog.set_authors(["Antonio Villarroel"])
+    aboutdialog.run()
+    aboutdialog.destroy()
+
+
 def cbk_quit(widget):
-
-    # Get pid of the daemon and kill it
-    try:
-        f = open(DAEMONPIDFILE, "r")
-        PID = f.read()
-        f.close()
-        PID.rstrip('\n')
-
-        os.kill(int(PID), signal.SIGTERM)
-
-        os.remove(DAEMONPIDFILE)
-    except:
-        print ""
     # sys.exit(0)
     Gtk.main_quit()
 
@@ -249,117 +252,225 @@ def cbk_quit(widget):
 
 
 def sighand():
-    try:
-        f = open(DAEMONPIDFILE, "r")
-        PID = f.read()
-        f.close()
-        PID.rstrip('\n')
-        # print "AA "+PID+" -- "+DAEMONPIDFILE
-        os.kill(int(PID), signal.SIGTERM)
-        os.remove(DAEMONPIDFILE)
-    except:
-        print ""
     Gtk.main_quit()
     sys.exit(0)
 
 ###########################################################
 
 
-def sigsetunreadicon():
-    global win
-    global BaseDir
+def truncline(msg):
+    limit = 40
+    final = ""
+    lista = msg.split("\n")
+    for item in lista:
+        if len(item) <= limit:
+            final = final + item
+        else:
+            tmpitem = item
+            while len(tmpitem) > limit:
+                left = tmpitem[:limit]
+                right = tmpitem[limit:]
+                final = final + left + "\n"
+                if len(right) <= limit:
+                    final = final + right + "\n"
+                    break
+                tmpitem = right
+        # print "AA ", final.encode('ASCII', "ignore")
+    return final
+
+
+def sigsetunreadicon(snippet):
     global ind
-    global detmenu_item
-    global details_item
+    global BaseDir
+    global tag1_item
+    global account_list
+
     print "Signal received change icon to unread .."
     ind.set_icon("unread.geary")
 
-    # Set tooltip to mail snippet
-    detailsfile_list = glob.glob(BaseDir + '/.details*')
-    content = ""
-    for fname in detailsfile_list:
-        try:
-            f = codecs.open(fname, "r", "utf-8")
-            fcontent = f.read()
-            f.close()
-        except:
-            print ""
-        content = content + "\n" + fcontent + "\n"
-    detmenu_item.set_label(content)
-    details_item.set_tooltip_text(content)
-    # details_item.set_sensitive(True)
-
+    tag1_item.set_label(truncline(snippet))
+    tag1_item.show()
 
 ###########################################################
 
+
 def sigreset():
-    global win
-    global BaseDir
     global ind
-    global details_item
 
     print "Signal change to all read"
 
     ind.set_icon("geary")
-    # notif_msg("GmailCheck", "Resetting to Unread!", "")
-    os.system("python "+BaseDir+"/setasread.py")
+    # os.system("python " + BaseDir + "/setasread.py")
+    # setasread()
+
+
+##########################################################################
+
+def writedets(account, msg):
+    global DETAILSFILE
+
+    name = account.split('@')
     try:
-        f = open(STATUSFILE, "w")
-        f.write("allread")
+        f = codecs.open(DETAILSFILE + "_" + name[0], "w", "utf-8")
+        f.write("Account: " + account + "\n")
+        f.write(msg)
         f.close()
     except:
-        print ("Error writing allread to status file!\n")
-    return True
+        print ("Error writing " + DETAILSFILE + "_" + name[0] + " file!")
 
 
 ###########################################################
-
-def chkdaemon():
-    global BaseDir
-    global STATUSFILE
-    global CHFLAG
+def chkemaildaemon():
+    global DEBUG
+    global EMAILAPP
     global ind
+    global CHKINTERVAL
+    global RESETINTERVAL
+    global account_list
 
-    # while True:
-    if DEBUG == 1:
-        print ("chkdaemon: going to check...")
-    isUp = ""
-    try:
-        isUp = subprocess.check_output("ps -ef | grep gmailchk_daemon | grep -v grep | wc -l", shell=True)
-        isUp = isUp.rstrip('\n')
-    except:
-        isUp = ""
-    if isUp == "":
-        notif_msg("Checking daemon is not running. Aborting...")
-        # Abortando
-        sighand()
-# ---------------------------------------
-    status = ""
-    try:
-        f = open(STATUSFILE, "r")
-        status = f.read()
-        f.close()
-    except:
-        print ("Error reading status file!\n")
-        status = "allread"
-    if DEBUG == 1:
-        print ("chkdaemon: vars: ", status, CHFLAG)
-    if status == "unread" and not CHFLAG:
-        CHFLAG = True
-        sigsetunreadicon()
-    elif status == "allread" and CHFLAG:
-        CHFLAG = False
-        sigreset()
+    # list to store the last emails ids for each account
+    lastmsglist = {}
+    whilecont = 1
+    nothingcount = 0
+    while (True):
+        acc_count = 1
+        if DEBUG == 1:
+            print ("chkemaildaemon: going to check...")
+        try:
+            emailappstatus = subprocess.check_output("ps -ef | grep " + EMAILAPP + " | grep -v grep", shell=True)
+            emailappstatus = emailappstatus.rstrip('\n')
+        except:
+            emailappstatus = ""
 
-    iconname = ind.get_icon()
-    if status == "sleep":
-        if iconname == "geary":
-            ind.set_icon("gearysleep")
-    else:
-        if iconname == "gearysleep":
-            ind.set_icon("geary")
+        iconname = ind.get_icon()
+        if emailappstatus != "":
+            if iconname == "geary":
+                ind.set_icon("gearysleep")
+            # Sleep if email app is running
+            if DEBUG == 1:
+                print ("chkemaildaemon: email app running, sleeping...")
+            whilecont = whilecont + 1
+            time.sleep(int(CHKINTERVAL))
+            continue
+        else:
+            if iconname == "gearysleep":
+                ind.set_icon("geary")
 
-    return True
+        for account in account_list:
+            try:
+                account_item = os.path.basename(account)
+                credentials = get_credentials(account_item)
+                http = credentials.authorize(httplib2.Http())
+                service = discovery.build('gmail', 'v1', http=http)
+
+                userdata = service.users().getProfile(userId='me').execute()
+                accountname = userdata["emailAddress"]
+                results = service.users().messages().list(userId='me', maxResults=1, q='is:unread', prettyPrint='true').execute()
+                messlist = results.get('messages', [])
+
+                # get latest unread message
+                if DEBUG == 1:
+                    # print (userdata)
+                    print ("Checking email for account " + accountname + "...\n")
+
+                if not messlist:
+                    if DEBUG == 1:
+                        print('Account ' + accountname + ': No messages found.')
+                    nothingcount = nothingcount + 1
+                else:
+                    # print('Messages:')
+                    currmsglist = ""
+                    firstmesg = ""
+                    snipmsg = ""
+                    cont = 1
+                    for messitem in messlist:
+                        # print(messitem['id'])
+                        if cont == 1:
+                            message = service.users().messages().get(userId='me', id=messitem['id']).execute()
+                            snipmsg = message['snippet']
+                            firstmesg = message['snippet'] + "\nLink: https://mail.google.com/mail/u/0/#inbox/" + messitem['id']
+                        currmsglist = currmsglist + messitem['id'] + "-"
+                        cont = cont + 1
+                        # print ('Message snippet: %s -- labels ' % message['labelIds'])
+                        # msg_str = base64.urlsafe_b64decode(message['raw'].encode('ASCII'))
+                    if whilecont == 1:
+                        notif_msg("Latest unread for " + accountname + ": " + firstmesg.encode('ASCII', "ignore"))
+
+                        writedets(accountname, firstmesg)
+                        # writestatusfile("allread")
+
+                    elif currmsglist != lastmsglist[account_item] and whilecont > 1:
+                        # new mail
+                        if DEBUG == 1:
+                            print ("New email for " + accountname + "!\n")
+                        notif_msg("New mail for " + accountname)
+                        writedets(accountname, firstmesg)
+                        # writestatusfile("unread")
+                        # change icon to unread messages
+                        sigsetunreadicon(snipmsg)
+
+                        nothingcount = 0
+                    else:
+                        nothingcount = nothingcount + 1
+                        if nothingcount % RESETINTERVAL == 0:
+                            if DEBUG == 1:
+                                print ("Same emails ... sending signal to reset icon")
+                            # writestatusfile("allread")
+                            # change icon to unread messages
+                            sigreset()
+
+                    # lastmsglist = currmsglist
+                    lastmsglist[account_item] = currmsglist
+            except errors.HttpError, error:
+                print ('An error occurred: %s' % error)
+
+            acc_count = acc_count + 1
+        whilecont = whilecont + 1
+        time.sleep(int(CHKINTERVAL))
+
+
+##########################################################
+
+def CreateMsgLabels():
+    """  Create object to update labels.
+  Returns:
+    A label update object."""
+    return {'removeLabelIds': ['UNREAD'], 'addLabelIds': []}
+
+##########################################################
+
+
+def setasread():
+    global BaseDir
+    global account_list
+
+    fecha = time.strftime("%Y:%m:%d")
+
+    for account in account_list:
+        try:
+            account_item = os.path.basename(account)
+            credentials = get_credentials(account_item)
+            http = credentials.authorize(httplib2.Http())
+            service = discovery.build('gmail', 'v1', http=http)
+
+            results = service.users().messages().list(userId='me', q='is:unread after:' + fecha, prettyPrint='true').execute()
+            messlist = results.get('messages', [])
+
+            if not messlist:
+                print('No messages found.')
+            else:
+                msg_labels = CreateMsgLabels()  # set unread as removed label
+
+                for messitem in messlist:
+                    # print(messitem['id'])
+                    message = service.users().messages().get(userId='me', id=messitem['id']).execute()
+                    # print ('Message snippet: %s ' % message['snippet'])
+                    # print ('Message snippet: %s -- labels ' % message['labelIds'])
+                    # msg_str = base64.urlsafe_b64decode(message['raw'].encode('ASCII'))
+                    message = service.users().messages().modify(userId='me', id=messitem['id'], body=msg_labels).execute()
+        except errors.HttpError, error:
+            print ('An error occurred: %s' % error)
+
 ##########################################################
 # MAIN
 
@@ -367,7 +478,7 @@ def chkdaemon():
 # signal.signal(signal.SIGUSR1, sigreset)
 
 
-account_list = glob.glob(os.environ['HOME']+'/.credentials_gmailchk_acc*')
+account_list = glob.glob(os.environ['HOME'] + '/.credentials_gmailchk_acc*')
 
 addaccountflag = 0
 ##########################################################
@@ -377,32 +488,43 @@ total = len(sys.argv)
 if total > 1:
     if sys.argv[1] == "--add_account":
         addaccountflag = 1
+    elif sys.argv[1] == "--help":
+        print "\nCommand line options\ngmailchk.py [--setup] [--add_account]"
+        sys.exit(0)
     elif sys.argv[1] == "--setup":
         print "\nInstalling required files to ~/.gmailchk..."
         if not os.path.exists(BaseDir):
             os.makedirs(BaseDir)
-        os.system("cp geary.svg "+BaseDir)
+        os.system("cp geary.svg " + BaseDir)
         os.system("cp geary.svg ~/.icons")
-        os.system("cp unread.geary.png "+BaseDir)
-        os.system("cp config.ini "+BaseDir)
-        os.system("bash setlinks.sh")
-        os.system("cp client_secret_gmailchkclient.json "+BaseDir)
+        os.system("cp *.png " + BaseDir)
+        os.system("cp config.ini " + BaseDir)
+        #os.system("bash setlinks.sh")
+        os.system("cp client_secret_gmailchkclient.json " + BaseDir)
         print "Finished.\nNow run python gmailchk.py --add_account\n"
         sys.exit(0)
 
     # empty the argument list for the gmail api
     del sys.argv[1:]
 
+# Check that email accounts had been setup
+account_list = glob.glob(os.environ['HOME'] + '/.credentials_gmailchk_acc*')
+
+if len(account_list) == 0:
+    print ("No accounts defined. Aborting. Run python gmailchk.py --add_account")
+    notif_msg("No accounts defined. Aborting...")
+    sys.exit(2)
+
 ##########################################################
 # Read config
 try:
-    CHKINTERVAL = subprocess.check_output("grep checkinterval "+CONFFILE+" | cut -d= -f 2", shell=True)
+    CHKINTERVAL = subprocess.check_output("grep checkinterval " + CONFFILE + " | cut -d= -f 2", shell=True)
     CHKINTERVAL = CHKINTERVAL.rstrip('\n')
 except:
     CHKINTERVAL = "300"
 
 try:
-    EMAILAPP = subprocess.check_output("grep emailapp "+CONFFILE+" | cut -d= -f 2", shell=True)
+    EMAILAPP = subprocess.check_output("grep emailapp " + CONFFILE + " | cut -d= -f 2", shell=True)
     EMAILAPP = EMAILAPP.rstrip('\n')
 except:
     EMAILAPP = ""
@@ -418,10 +540,10 @@ except ImportError:
 
 if len(account_list) == 0 or addaccountflag == 1:
     nextacc = len(account_list) + 1
-    credentials = get_credentials(".credentials_gmailchk_acc"+str(nextacc))
+    credentials = get_credentials(".credentials_gmailchk_acc" + str(nextacc))
     http = credentials.authorize(httplib2.Http())
     service = discovery.build('gmail', 'v1', http=http)
-    print "\nAccount created! To delete it remove the entire directory ~/.credentials_gmailchk_acc"+str(nextacc)
+    print "\nAccount created! To delete it remove the entire directory ~/.credentials_gmailchk_acc" + str(nextacc)
     sys.exit(0)
 
 ###########################################
@@ -429,35 +551,40 @@ if len(account_list) == 0 or addaccountflag == 1:
 Notify.init(APP)
 
 win = Gtk.Window()
-win.set_icon_from_file(BaseDir+"/geary.svg")
+win.set_icon_from_file(BaseDir + "/geary.svg")
 ind = appindicator.Indicator.new("Gmail Check", "geary", appindicator.IndicatorCategory.APPLICATION_STATUS)
 ind.set_icon_theme_path(BaseDir)
 ind.set_status(appindicator.IndicatorStatus.ACTIVE)
 
 menu = Gtk.Menu()
 
-details_item = Gtk.MenuItem("Latest Messages")
-details_item.connect("activate", cbk_details)
 
 separator = Gtk.SeparatorMenuItem()
 
 setting_item = Gtk.MenuItem("Settings")
 setting_item.connect("activate", cbk_settings)
 
+about_item = Gtk.MenuItem("About")
+about_item.connect("activate", cbk_about)
+
 quit_item = Gtk.MenuItem("Quit")
 quit_item.connect("activate", cbk_quit)
 
-details_item.show()
+tag1_item = Gtk.MenuItem("")
+tag1_item.connect("activate", cbk_reset)
+# details_item.show()
 
 setting_item.show()
 separator.show()
+about_item.show()
 quit_item.show()
 
-menu.append(details_item)
 menu.append(setting_item)
 menu.append(separator)
+menu.append(about_item)
 menu.append(quit_item)
-
+menu.append(separator)
+menu.append(tag1_item)
 ind.set_menu(menu)
 
 win.connect("delete-event", Gtk.main_quit)
@@ -473,12 +600,15 @@ GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGINT, sighand)
 GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGTERM, sighand)
 
 # Periodically reset the icon to all read
-id = GLib.timeout_add_seconds(10, chkdaemon)
+# id = GLib.timeout_add_seconds(10, chkdaemon)
 
-parentpid = os.getpid()
+# threading.Thread(target=chkdaemon).start()
+d = threading.Thread(target=chkemaildaemon, name='Daemon')
+d.setDaemon(True)
+d.start()
 
 # start daemon checker
-os.system("python "+BaseDir+"/gmailchk_daemon.py "+str(parentpid)+" &")
+# os.system("python " + BaseDir + "/gmailchk_daemon.py " + str(parentpid) + " &")
 # print "python "+BaseDir+"/gmailchk_daemon.py "+str(PID)+" &"
 
 Gtk.main()
