@@ -1,5 +1,6 @@
 #!/usr/bin/python
 import httplib2
+from httplib2 import socks
 
 import os
 import signal
@@ -88,19 +89,34 @@ def get_credentials(acc_dir):
 def notif_msg(msg):
     global APP
     try:
-        icon = BaseDir + "/geary.png"
-        os.system("notify-send -i " + icon + " " + APP + " \"" + msg + "\"")
+
+        os.system("notify-send -i " + "geary " + APP + " \"" + msg + "\"")
         # n = Notify.Notification.new("<b>" + APP + "</b>", msg, "geary")
         # n.show()
     except:
         print "error in notif_msg..."
 
+
+###########################################################
+
+def getproxymode():
+    try:
+        proxystatus = subprocess.check_output("gsettings get org.gnome.system.proxy mode ", shell=True)
+        proxystatus = proxystatus.rstrip("\n")
+        proxystatus = proxystatus.strip("'")
+        return proxystatus
+    except:
+        print "Error in getproxymode..."
 ###########################################################
 
 
 def cbk_reset(widget):
 
     global ind
+    global tag1_item
+
+    tag1_item.set_label("Nothing new")
+
     print "Signal change to all read"
     ind.set_icon("geary")
 
@@ -154,7 +170,7 @@ def cbk_details(widget):
     response = dialog.run()
 
     # Reset red icon to normal
-    sigreset()
+    # sigreset()
 
     dialog.destroy()
 ###########################################################
@@ -289,17 +305,21 @@ def sigsetunreadicon(snippet):
     ind.set_icon("unread.geary")
 
     tag1_item.set_label(truncline(snippet))
-    tag1_item.show()
+    print "    Settig item menu to " + snippet
+    # tag1_item.show()
 
 ###########################################################
 
 
 def sigreset():
     global ind
+    global tag1_item
 
     print "Signal change to all read"
 
     ind.set_icon("geary")
+    tag1_item.set_label("Nothing new")
+    print "    Settig item menu to reset"
     # os.system("python " + BaseDir + "/setasread.py")
     # setasread()
 
@@ -332,8 +352,14 @@ def chkemaildaemon():
     lastmsglist = {}
     whilecont = 1
     nothingcount = 0
+    msgfilter = ""
     while (True):
         acc_count = 1
+        fecha = time.strftime("%Y:%m:%d")
+        if whilecont == 1:
+            msgfilter = 'is:unread'
+        else:
+            msgfilter = 'is:unread and is newer_than:1d'
         if DEBUG == 1:
             print ("chkemaildaemon: going to check...")
         try:
@@ -360,71 +386,97 @@ def chkemaildaemon():
             try:
                 account_item = os.path.basename(account)
                 credentials = get_credentials(account_item)
-                http = credentials.authorize(httplib2.Http())
-                service = discovery.build('gmail', 'v1', http=http)
 
-                userdata = service.users().getProfile(userId='me').execute()
-                accountname = userdata["emailAddress"]
-                results = service.users().messages().list(userId='me', maxResults=1, q='is:unread', prettyPrint='true').execute()
-                messlist = results.get('messages', [])
+                proxystatus = getproxymode()
 
-                # get latest unread message
-                if DEBUG == 1:
-                    # print (userdata)
-                    print ("Checking email for account " + accountname + "...\n")
-
-                if not messlist:
-                    if DEBUG == 1:
-                        print('Account ' + accountname + ': No messages found.')
-                    nothingcount = nothingcount + 1
+                if proxystatus == "none":
+                    print "Setting up for direct connection"
+                    http = credentials.authorize(httplib2.Http(timeout=5))
                 else:
-                    # print('Messages:')
-                    currmsglist = ""
-                    firstmesg = ""
-                    snipmsg = ""
-                    cont = 1
-                    for messitem in messlist:
-                        # print(messitem['id'])
-                        if cont == 1:
-                            message = service.users().messages().get(userId='me', id=messitem['id']).execute()
-                            snipmsg = message['snippet']
-                            firstmesg = message['snippet'] + "\nLink: https://mail.google.com/mail/u/0/#inbox/" + messitem['id']
-                        currmsglist = currmsglist + messitem['id'] + "-"
-                        cont = cont + 1
-                        # print ('Message snippet: %s -- labels ' % message['labelIds'])
-                        # msg_str = base64.urlsafe_b64decode(message['raw'].encode('ASCII'))
-                    if whilecont == 1:
-                        notif_msg("Latest unread for " + accountname + ": " + firstmesg.encode('ASCII', "ignore"))
+                    proxyhost = subprocess.check_output("gsettings get org.gnome.system.proxy.http host | tr -d \\'", shell=True)
+                    proxyhost = proxyhost.rstrip("\n")
+                    proxyport = subprocess.check_output("gsettings get org.gnome.system.proxy.http port | tr -d \\'", shell=True)
+                    proxyport = proxyport.rstrip("\n")
+                    proxyuser = subprocess.check_output("gsettings get org.gnome.system.proxy.http authentication-user | tr -d \\'", shell=True)
+                    proxyuser = proxyuser.rstrip("\n")
+                    proxypass = subprocess.check_output("gsettings get org.gnome.system.proxy.http authentication-password | tr -d \\'", shell=True)
+                    proxypass = proxypass.rstrip("\n")
 
-                        writedets(accountname, firstmesg)
-                        # writestatusfile("allread")
+                    http = credentials.authorize(httplib2.Http(timeout=5, proxy_info=httplib2.ProxyInfo(socks.PROXY_TYPE_HTTP, proxyhost, 8080, proxy_user=proxyuser, proxy_pass=proxypass)))
 
-                    elif currmsglist != lastmsglist[account_item] and whilecont > 1:
-                        # new mail
+                service = discovery.build('gmail', 'v1', http=http)
+            except:
+                print "Conection error"
+                notif_msg("Connection Error...")
+
+                # time.sleep(int(CHKINTERVAL))
+                continue
+            print "Checking now..."
+            userdata = service.users().getProfile(userId='me').execute()
+            accountname = userdata["emailAddress"]
+            results = service.users().messages().list(userId='me', maxResults=1, q=msgfilter, prettyPrint='true').execute()
+            messlist = results.get('messages', [])
+
+            # get latest unread message
+            if DEBUG == 1:
+                # print (userdata)
+                print ("Checking email for account " + accountname + " with filter " + msgfilter + "...\n")
+
+            if not messlist:
+                if DEBUG == 1:
+                    print('Account ' + accountname + ': No messages found.')
+                nothingcount = nothingcount + 1
+            else:
+                # print('Messages:')
+                currmsglist = ""
+                firstmesg = ""
+                snipmsg = ""
+                snipall = ""
+                cont = 1
+                for messitem in messlist:
+                    # print(messitem['id'])
+                    # if cont == 1:
+                    message = service.users().messages().get(userId='me', id=messitem['id']).execute()
+                    snipmsg = message['snippet']
+                    firstmesg = message['snippet'] + "\nLink: https://mail.google.com/mail/u/0/#inbox/" + messitem['id']
+                    currmsglist = currmsglist + messitem['id'] + "-"
+                    cont = cont + 1
+                    snipall = snipall + accountname + ": " + message['snippet'] + "\n"
+                    # print ('Message snippet: %s -- labels ' % message['labelIds'])
+                    # msg_str = base64.urlsafe_b64decode(message['raw'].encode('ASCII'))
+                # Primer ejecucion de la app
+                if whilecont == 1:
+                    notif_msg("Latest unread for " + accountname + ": " + firstmesg.encode('ASCII', "ignore"))
+                    writedets(accountname, firstmesg)
+                    # writestatusfile("allread")
+                # Resto de ejecuciones y hay correo nuevo
+                elif currmsglist != lastmsglist[account_item] and whilecont > 1:
+                    # new mail
+                    if DEBUG == 1:
+                        print ("New email for " + accountname + "!\n")
+                    notif_msg("New mail for " + accountname)
+                    writedets(accountname, firstmesg)
+                    # writestatusfile("unread")
+                    # change icon to unread messages
+                    sigsetunreadicon(snipall)
+
+                    nothingcount = 0
+                # nada nuevo
+                else:
+                    nothingcount = nothingcount + 1
+                    if nothingcount % RESETINTERVAL == 0:
                         if DEBUG == 1:
-                            print ("New email for " + accountname + "!\n")
-                        notif_msg("New mail for " + accountname)
-                        writedets(accountname, firstmesg)
-                        # writestatusfile("unread")
+                            print ("Same emails ... sending signal to reset icon")
+                        # writestatusfile("allread")
                         # change icon to unread messages
-                        sigsetunreadicon(snipmsg)
+                        sigreset()
 
-                        nothingcount = 0
-                    else:
-                        nothingcount = nothingcount + 1
-                        if nothingcount % RESETINTERVAL == 0:
-                            if DEBUG == 1:
-                                print ("Same emails ... sending signal to reset icon")
-                            # writestatusfile("allread")
-                            # change icon to unread messages
-                            sigreset()
-
-                    # lastmsglist = currmsglist
-                    lastmsglist[account_item] = currmsglist
-            except errors.HttpError, error:
-                print ('An error occurred: %s' % error)
-
+                # lastmsglist = currmsglist
+                lastmsglist[account_item] = currmsglist
+            # except errors.HttpError, error:
+            #    print ('An error occurred: %s' % error)
             acc_count = acc_count + 1
+
         whilecont = whilecont + 1
         time.sleep(int(CHKINTERVAL))
 
@@ -558,6 +610,8 @@ ind.set_status(appindicator.IndicatorStatus.ACTIVE)
 
 menu = Gtk.Menu()
 
+detail_item = Gtk.MenuItem("Lastest Mail message")
+detail_item.connect("activate", cbk_details)
 
 separator = Gtk.SeparatorMenuItem()
 
@@ -570,15 +624,18 @@ about_item.connect("activate", cbk_about)
 quit_item = Gtk.MenuItem("Quit")
 quit_item.connect("activate", cbk_quit)
 
-tag1_item = Gtk.MenuItem("")
+tag1_item = Gtk.MenuItem("Noting yet")
 tag1_item.connect("activate", cbk_reset)
-# details_item.show()
+
+detail_item.show()
+tag1_item.show()
 
 setting_item.show()
 separator.show()
 about_item.show()
 quit_item.show()
 
+menu.append(detail_item)
 menu.append(setting_item)
 menu.append(separator)
 menu.append(about_item)
