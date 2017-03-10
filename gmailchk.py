@@ -125,6 +125,12 @@ def cbk_reset(widget):
 ###########################################################
 
 
+def cbk_markread(widget):
+    setasread()
+
+###########################################################
+
+
 def cbk_details(widget):
     global ind
 
@@ -566,7 +572,6 @@ def CreateMsgLabels():
 
 
 def setasread():
-    global BaseDir
     global account_list
     global lastmsglist
 
@@ -613,6 +618,8 @@ def setasread():
             message = service.users().messages().modify(userId='me', id=lastmsglist[acc_count], body=msg_labels).execute()
         except errors.HttpError, error:
             print ('setasread: An error occurred: %s' % error)
+            notif_msg("Connection Error...", 5000)
+        acc_count = acc_count + 1  # For accounts last line
 
 ##########################################################
 # MAIN
@@ -706,6 +713,9 @@ menu = Gtk.Menu()
 detail_item = Gtk.MenuItem("Lastest Mail messages")
 detail_item.connect("activate", cbk_details)
 
+mark_read = Gtk.MenuItem("Mark Read")
+mark_read.connect("activate", cbk_markread)
+
 separator = Gtk.SeparatorMenuItem()
 
 setting_item = Gtk.MenuItem("Settings")
@@ -721,6 +731,7 @@ tag1_item = Gtk.MenuItem("")
 tag1_item.connect("activate", cbk_reset)
 
 detail_item.show()
+mark_read.show()
 tag1_item.show()
 
 setting_item.show()
@@ -729,6 +740,7 @@ about_item.show()
 quit_item.show()
 
 menu.append(detail_item)
+menu.append(mark_read)
 menu.append(setting_item)
 menu.append(separator)
 menu.append(about_item)
