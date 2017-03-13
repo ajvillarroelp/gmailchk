@@ -25,7 +25,7 @@ from gi.repository import AppIndicator3 as appindicator
 gi.require_version('Notify', '0.7')
 from gi.repository import Notify
 
-VERSION = "1.3"
+VERSION = "1.6"
 BaseDir = os.environ['HOME'] + "/.gmailchk"
 BinDir = os.environ['HOME'] + "/bin"
 CONFFILE = BaseDir + "/config.ini"
@@ -36,12 +36,14 @@ UNREADICON = BaseDir + "/unread.geary.png"
 DAEMONPIDFILE = BaseDir + "/pid"
 DETAILSFILE = BaseDir + "/.details"
 STATUSFILE = BaseDir + "/.status"
+ENABLEDAEMON = 1
 CHFLAG = False
 CHKINTERVAL = ""
 RESETINTERVAL = 12
 APP = "GmailCheck"
 MARGIN = 5
 DEBUG = 1
+CONNERRORCOUNT = 0
 
 GObject.threads_init()
 
@@ -127,6 +129,17 @@ def cbk_reset(widget):
 
 def cbk_markread(widget):
     setasread()
+
+###########################################################
+
+
+def cbk_toggle(widget):
+    global ENABLEDAEMON
+
+    if widget.get_active():
+        ENABLEDAEMON = 1
+    else:
+        ENABLEDAEMON = 0
 
 ###########################################################
 
@@ -380,16 +393,44 @@ def writedets(account, msg):
     except:
         print ("Error writing " + DETAILSFILE + "_" + name[0] + " file!")
 
+###########################################################
+
+
+def handleerror():
+    global CONNERRORCOUNT
+    global ind
+    if CONNERRORCOUNT < 1:
+        notif_msg("Connection Error...", 5000)
+        ind.set_icon("gearyerr")
+    else:
+        if CONNERRORCOUNT > 2:
+            disabledaemon()
+    CONNERRORCOUNT = CONNERRORCOUNT + 1
 
 ###########################################################
+
+
+def disabledaemon():
+    global enable_item
+    global ENABLEDAEMON
+
+    ENABLEDAEMON = 0
+    enable_item.set_active(False)
+
+
+###########################################################
+
+
 def chkemaildaemon():
     global DEBUG
     global EMAILAPP
+    global ENABLEDAEMON
     global ind
     global CHKINTERVAL
     global RESETINTERVAL
     global account_list
     global lastmsglist
+    global CONNERRORCOUNT
 
     acc_count = 0
     for item in account_list:
@@ -399,7 +440,7 @@ def chkemaildaemon():
     whilecont = 1
     nothingcount = 0
     msgfilter = ""
-    connerrorcount = 0
+    CONNERRORCOUNT = 0
 
     while (True):
         acc_count = 0
@@ -408,15 +449,28 @@ def chkemaildaemon():
             msgfilter = '(label:inbox) (newer_than:5d)'
         else:
             msgfilter = '(newer_than:1h) (label:inbox)'
-        if DEBUG == 1:
-            print ("chkemaildaemon: going to check...")
+
+        iconname = ind.get_icon()
+
+        if ENABLEDAEMON == 0:
+            if iconname == "geary":
+                ind.set_icon("gearysleep")
+            # Sleep if email app is running
+            if DEBUG == 1:
+                print ("chkemaildaemon: check mail disabled, sleeping...")
+            whilecont = whilecont + 1
+            time.sleep(int(CHKINTERVAL))
+            continue
+        else:
+            if iconname == "gearysleep":
+                ind.set_icon("geary")
+
         try:
             emailappstatus = subprocess.check_output("ps -ef | grep " + EMAILAPP + " | grep -v grep", shell=True)
             emailappstatus = emailappstatus.rstrip('\n')
         except:
             emailappstatus = ""
 
-        iconname = ind.get_icon()
         # -----------------------------------
         # Set icon according to email app status
         if emailappstatus != "":
@@ -432,9 +486,12 @@ def chkemaildaemon():
             if iconname == "gearysleep":
                 ind.set_icon("geary")
 
+        if DEBUG == 1:
+            print ("chkemaildaemon: going to check...")
+
         # -----------------------------------
         # Restore icon if no errors
-        if connerrorcount == 0 and iconname == "gearyerr":
+        if CONNERRORCOUNT == 0 and iconname != "geary":
             ind.set_icon("geary")
 
         for account in account_list:
@@ -458,18 +515,18 @@ def chkemaildaemon():
                     proxypass = proxypass.rstrip("\n")
 
                     http = credentials.authorize(httplib2.Http(timeout=5, proxy_info=httplib2.ProxyInfo(socks.PROXY_TYPE_HTTP, proxyhost, 8080, proxy_user=proxyuser, proxy_pass=proxypass)))
-                    connerrorcount = 0
-                service = discovery.build('gmail', 'v1', http=http)
 
+                service = discovery.build('gmail', 'v1', http=http)
+                CONNERRORCOUNT = 0
             except Exception,e:
                 print "Conn error: %s" % e
-                if connerrorcount < 1:
+                if CONNERRORCOUNT < 1:
                     notif_msg("Connection Error...", 5000)
                     ind.set_icon("gearyerr")
                 else:
-                    connerrorcount = connerrorcount + 1
-
-                # time.sleep(int(CHKINTERVAL))
+                    if CONNERRORCOUNT > 2:
+                        disabledaemon()
+                CONNERRORCOUNT = CONNERRORCOUNT + 1
                 continue
 
             fecha = time.strftime("%Y/%m/%d %H:%M")
@@ -716,6 +773,10 @@ detail_item.connect("activate", cbk_details)
 mark_read = Gtk.MenuItem("Mark Read")
 mark_read.connect("activate", cbk_markread)
 
+enable_item = Gtk.CheckMenuItem("Check Mail?")
+enable_item.set_active(True)
+enable_item.connect("activate", cbk_toggle)
+
 separator = Gtk.SeparatorMenuItem()
 
 setting_item = Gtk.MenuItem("Settings")
@@ -732,6 +793,7 @@ tag1_item.connect("activate", cbk_reset)
 
 detail_item.show()
 mark_read.show()
+enable_item.show()
 tag1_item.show()
 
 setting_item.show()
@@ -741,6 +803,7 @@ quit_item.show()
 
 menu.append(detail_item)
 menu.append(mark_read)
+menu.append(enable_item)
 menu.append(setting_item)
 menu.append(separator)
 menu.append(about_item)
