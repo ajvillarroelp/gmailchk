@@ -10,6 +10,7 @@ import glob
 import codecs
 import threading
 import time
+import ConfigParser
 import gi
 
 from apiclient import discovery
@@ -25,7 +26,7 @@ from gi.repository import AppIndicator3 as appindicator
 gi.require_version('Notify', '0.7')
 from gi.repository import Notify
 
-VERSION = "1.6"
+VERSION = "1.7"
 BaseDir = os.environ['HOME'] + "/.gmailchk"
 BinDir = os.environ['HOME'] + "/bin"
 CONFFILE = BaseDir + "/config.ini"
@@ -117,29 +118,34 @@ def getproxymode():
 
 def cbk_reset(widget):
     global ind
-    global tag1_item
 
     setasread()
     print "Icon change to all read"
     ind.set_icon("geary")
-    tag1_item.set_label("Nothing yet")
 
 ###########################################################
 
 
 def cbk_markread(widget):
     setasread()
+    print "Icon change to all read"
+    ind.set_icon("geary")
 
 ###########################################################
 
 
 def cbk_toggle(widget):
     global ENABLEDAEMON
+    global ind
 
     if widget.get_active():
         ENABLEDAEMON = 1
+        print "Icon change ready"
+        ind.set_icon("geary")
     else:
         ENABLEDAEMON = 0
+        print "Icon change to sleep"
+        ind.set_icon("gearysleep")
 
 ###########################################################
 
@@ -200,6 +206,9 @@ def cbk_details(widget):
 def cbk_settings(widget):
     global CHKINTERVAL
     global EMAILAPP
+    global configf
+    global config_path
+
     print ("Settings")
 
     dialog = Gtk.Dialog(title="Settings", buttons=(Gtk.STOCK_OK, Gtk.ResponseType.OK, Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL))
@@ -245,18 +254,21 @@ def cbk_settings(widget):
     if response == Gtk.ResponseType.OK:
         _chkintv = entry1.get_text()
         _emailapp = entry2.get_text()
-        # _coords=entry2.get_text()
-        # _extscript=entry4.get_text()
         if _chkintv != "" and _emailapp != "":
             CHKINTERVAL = _chkintv
             EMAILAPP = _emailapp
-            # coords=_coords
-            # height=_height
-            # extscript=_extscript
-            f = open(CONFFILE, "w")
-            f.write("checkinterval=" + CHKINTERVAL + "\n")
-            f.write("emailapp=" + EMAILAPP + "\n")
-            f.close()
+
+            configf.set("Main", "checkinterval", CHKINTERVAL)
+            configf.set("Main", "emailapp", EMAILAPP)
+
+            try:
+                configf.write(open(config_path, "wb"))
+            except:
+                messagedialog = Gtk.MessageDialog(message_format="Error: could not write config file.")
+                messagedialog.set_property("message-type", Gtk.MessageType.ERROR)
+                messagedialog.add_button("OK", Gtk.ButtonsType.OK)
+                messagedialog.run()
+                messagedialog.destroy()
         else:
             messagedialog = Gtk.MessageDialog(message_format="Error: One parameter is empty!\nTry again.")
 
@@ -321,38 +333,8 @@ def truncline(msg):
 def getsubject(header):
     for item in header:
         if item['name'] == "Subject":
-            print "CC ", item['value']
+            # print "CC ", item['value']
             return item['value']
-
-###########################################################
-
-
-def setmenulabel(snippet, acc_index):
-    global tag1_item
-    global menu
-    # global account_list
-    # print "    Settig item menu to " + snippet
-    # if acc_index == 0:
-    #    tag1_item.set_label(truncline(snippet))
-    # else:
-    currlabel = tag1_item.get_label()
-    currlabel = truncline(snippet) + "\n.-\n" + currlabel
-    tmplabel = []
-    tmplabel = currlabel.split("\n")
-    newlabel = tmplabel[:14]
-    labelstring = ""
-    finalstring = truncline(labelstring.join(newlabel)).encode('ASCII', "ignore")
-    print "--Set menu label .." + finalstring.replace(".-", "\n")
-    time.sleep(2)
-
-    tag1_item.destroy()
-
-    # tag1_item.props.label = finalstring.replace(".-", "\n")
-    tag1_item = Gtk.MenuItem(finalstring.replace(".-", "\n"))
-    tag1_item.connect("activate", cbk_reset)
-    tag1_item.show()
-    menu.append(tag1_item)
-    # tag1_item.set_label(finalstring.replace(".-", "\n"))
 
 
 ###########################################################
@@ -371,9 +353,7 @@ def sigreset():
     global tag1_item
 
     print "Signal change to all read"
-
     ind.set_icon("geary")
-    # tag1_item.set_label("Nothing new")
     print "    Settig item menu to reset"
 
 
@@ -726,17 +706,30 @@ if len(account_list) == 0:
 
 ##########################################################
 # Read config
-try:
-    CHKINTERVAL = subprocess.check_output("grep checkinterval " + CONFFILE + " | cut -d= -f 2", shell=True)
-    CHKINTERVAL = CHKINTERVAL.rstrip('\n')
-except:
-    CHKINTERVAL = "300"
 
-try:
-    EMAILAPP = subprocess.check_output("grep emailapp " + CONFFILE + " | cut -d= -f 2", shell=True)
-    EMAILAPP = EMAILAPP.rstrip('\n')
-except:
-    EMAILAPP = ""
+# Load configuration
+configf = ConfigParser.RawConfigParser()
+config_path = os.path.expanduser(os.path.join("~", ".gmailchk/config.ini"))
+if os.access(config_path, os.W_OK):  # If a config file exists...
+    configf.read(config_path)   # ...load it.
+else:
+    configf.add_section("Main")
+    configf.set("Main", "checkinterval", "100")
+    configf.set("Main", "emailapp", "geary")
+    try:
+        configf.write(open(config_path, "wb"))
+    except:
+        print "Could not write configuration file ~/.gmailchk/config.ini"
+        exit()
+
+if not configf.has_option("Main", "checkinterval"):
+    configf.set("Main", "checkinterval", "100")
+
+if not configf.has_option("Main", "emailapp"):
+    configf.set("Main", "emailapp", "geary")
+
+CHKINTERVAL = configf.get('Main', 'checkinterval')
+EMAILAPP = configf.get('Main', 'emailapp')
 
 try:
     import argparse
@@ -788,13 +781,9 @@ about_item.connect("activate", cbk_about)
 quit_item = Gtk.MenuItem("Quit")
 quit_item.connect("activate", cbk_quit)
 
-tag1_item = Gtk.MenuItem("")
-tag1_item.connect("activate", cbk_reset)
-
 detail_item.show()
 mark_read.show()
 enable_item.show()
-tag1_item.show()
 
 setting_item.show()
 separator.show()
@@ -809,7 +798,6 @@ menu.append(separator)
 menu.append(about_item)
 menu.append(quit_item)
 menu.append(separator)
-menu.append(tag1_item)
 ind.set_menu(menu)
 
 win.connect("delete-event", Gtk.main_quit)
